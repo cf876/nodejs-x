@@ -13,7 +13,7 @@ const httpProxy = require('http-proxy');
 // 环境变量配置
 const UPLOAD_URL = process.env.UPLOAD_URL || '';  // 节点上传API地址，用于上传订阅或节点信息到外部服务
 const PROJECT_URL = process.env.PROJECT_URL || '';  // 项目外部访问URL，用于生成订阅链接和自动保活
-const AUTO_ACCESS = process.env.AUTO_ACCESS || true;  // 是否启用自动访问保活（防止隧道休眠），布尔值
+const AUTO_ACCESS = process.env.AUTO_ACCESS || false;  // 是否启用自动访问保活（防止隧道休眠），布尔值
 const FILE_PATH = process.env.FILE_PATH || './tmp';  // 临时文件存储路径，用于存放下载的二进制文件和配置文件
 const SUB_PATH = process.env.SUB_PATH || 'sub';  // 订阅路径名称，访问订阅的URL路径
 const PORT = process.env.SERVER_PORT || process.env.PORT || 3000;  // 内部HTTP服务端口
