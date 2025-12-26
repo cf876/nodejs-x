@@ -10,26 +10,111 @@ const { execSync } = require('child_process');
 const http = require('http');
 const httpProxy = require('http-proxy');
 
+// ==================== WARP 配置部分 ====================
+// 全局WARP配置（强制全流量走WARP）
+const warpConfig = {
+  name: '',
+  v46url: 'https://icanhazip.com',
+  warpUrl: 'https://ygkkk-warp.renky.eu.org',
+  agsbxDir: path.join(process.env.HOME || '/root', 'agsbx'),
+  // WARP默认参数
+  defaultWarp: {
+    wpv6: '2606:4700:110:8d8d:1845:c39f:2dd5:a03a',
+    pvk: '52cuYFgCJXp0LAq7+nWJIbCXXgU9eGggOc+Hlfz5u6A=',
+    res: '[215, 69, 233]'
+  },
+  // WARP端点配置
+  warpEndpoints: {
+    ipv4: '162.159.192.1',
+    ipv6: '[2606:4700:d0::a29f:c001]'
+  }
+};
+
+// 确保目录存在
+function ensureDir(dir) {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+// 执行HTTP请求（替代curl/wget）
+function fetchUrl(url) {
+  try {
+    // 优先使用curl，超时5秒
+    return execSync(`curl -s5m -k ${url}`, { timeout: 5000 }).toString().trim();
+  } catch (e) {
+    try {
+      // curl失败则用wget，超时3秒
+      return execSync(`wget -qO- --timeout=3 --tries=2 ${url}`, { timeout: 3000 }).toString().trim();
+    } catch (err) {
+      return '';
+    }
+  }
+}
+
+// 获取服务器IPv4/IPv6地址
+function getV4V6() {
+  const v4 = fetchUrl(`curl -s4m5 -k ${warpConfig.v46url}`) || fetchUrl(`wget -4 --tries=2 -qO- ${warpConfig.v46url}`);
+  const v6 = fetchUrl(`curl -s6m5 -k ${warpConfig.v46url}`) || fetchUrl(`wget -6 --tries=2 -qO- ${warpConfig.v46url}`);
+  return { v4, v6 };
+}
+
+// 获取WARP参数（仅保留核心逻辑，无分支判断）
+function getWarpParams() {
+  let warpData = fetchUrl(warpConfig.warpUrl);
+  let pvk, wpv6, res;
+
+  // 解析远程WARP参数，失败则用默认值
+  if (warpData && warpData.includes('ygkkk')) {
+    pvk = warpData.match(/Private_key：([^\n]+)/)?.[1]?.trim() || warpConfig.defaultWarp.pvk;
+    wpv6 = warpData.match(/IPV6：([^\n]+)/)?.[1]?.trim() || warpConfig.defaultWarp.wpv6;
+    res = warpData.match(/reserved：([^\n]+)/)?.[1]?.trim() || warpConfig.defaultWarp.res;
+  } else {
+    pvk = warpConfig.defaultWarp.pvk;
+    wpv6 = warpConfig.defaultWarp.wpv6;
+    res = warpConfig.defaultWarp.res;
+  }
+
+  // 强制所有流量走WARP（移除所有分支，固定出站标签）
+  const x1outtag = 'warp-out';
+  const x2outtag = 'warp-out';
+  const xip = '"::/0", "0.0.0.0/0"'; // 所有IPv4+IPv6
+  const wap = 'warp';
+  const wxryx = 'ForceIPv6v4'; // 强制双栈优先
+
+  // 自动选择WARP端点（IPv6优先，无则用IPv4）
+  const { v6 } = getV4V6();
+  const v6Ok = !!v6;
+  const xendip = v6Ok ? warpConfig.warpEndpoints.ipv6 : warpConfig.warpEndpoints.ipv4;
+
+  return {
+    pvk, wpv6, res,
+    x1outtag, x2outtag,
+    xip, wap, wxryx,
+    xendip,
+    v4: getV4V6().v4,
+    v6: getV4V6().v6
+  };
+}
+// ==================== WARP 配置部分结束 ====================
+
 // 环境变量配置
 const UPLOAD_URL = process.env.UPLOAD_URL || '';      // 节点或订阅自动上传地址
-const PROJECT_URL = process.env.PROJECT_URL || '';    // 项目访问地址，用于生成订阅链接
-const AUTO_ACCESS = process.env.AUTO_ACCESS || false; // 是否自动访问项目URL保持活跃（true/false）
+const PROJECT_URL = process.env.PROJECT_URL || '';    // 项目访问地址
+const AUTO_ACCESS = process.env.AUTO_ACCESS || false; // 是否自动访问项目URL保持活跃
 const FILE_PATH = process.env.FILE_PATH || './tmp';   // 临时文件存储目录路径
 const SUB_PATH = process.env.SUB_PATH || 'sub';       // 订阅链接访问路径
 const PORT = process.env.SERVER_PORT || process.env.PORT || 3000; // 内部HTTP服务端口
-const EXTERNAL_PORT = process.env.EXTERNAL_PORT || 7860; // 外部代理服务器端口和Argo端口
+const EXTERNAL_PORT = process.env.EXTERNAL_PORT || 7860; // 外部代理服务器端口
 const UUID = process.env.UUID || '4b3e2bfe-bde1-5def-d035-0cb572bbd046'; // Xray用户UUID
 const NEZHA_SERVER = process.env.NEZHA_SERVER || '';  // 哪吒监控服务器地址
-const NEZHA_PORT = process.env.NEZHA_PORT || '';      // 哪吒v0监控服务器端口（可选）
+const NEZHA_PORT = process.env.NEZHA_PORT || '';      // 哪吒v0监控服务器端口
 const NEZHA_KEY = process.env.NEZHA_KEY || '';        // 哪吒监控客户端密钥
 const ARGO_DOMAIN = process.env.ARGO_DOMAIN || '';    // Cloudflare Argo隧道域名
-const ARGO_AUTH = process.env.ARGO_AUTH || '';        // Argo隧道认证信息（Token或Json）
+const ARGO_AUTH = process.env.ARGO_AUTH || '';        // Argo隧道认证信息
 const CFIP = process.env.CFIP || 'cdns.doon.eu.org';  // CDN回源IP地址
 const CFPORT = process.env.CFPORT || 443;             // CDN回源端口
 const NAME = process.env.NAME || '';                  // 节点名称前缀
-// WARP相关环境变量（可选）
-const WARP_API_URL = process.env.WARP_API_URL || 'https://ygkkk-warp.renky.eu.org'; // WARP配置获取地址
-const WARP_PREFER_IPV6 = process.env.WARP_PREFER_IPV6 || false; // 是否优先使用IPv6
 
 // 创建运行文件夹
 if (!fs.existsSync(FILE_PATH)) {
@@ -62,8 +147,6 @@ let subPath = path.join(FILE_PATH, 'sub.txt');
 let listPath = path.join(FILE_PATH, 'list.txt');
 let bootLogPath = path.join(FILE_PATH, 'boot.log');
 let configPath = path.join(FILE_PATH, 'config.json');
-let warpConfig = null; // WARP配置缓存
-global.ipv6Connectivity = undefined; // 全局IPv6连通性检测结果缓存
 
 // 创建HTTP代理
 const proxy = httpProxy.createProxyServer();
@@ -166,280 +249,10 @@ function cleanupOldFiles() {
   }
 }
 
-// ====================== WARP相关功能（完全匹配甬哥Shell脚本） ======================
-/**
- * 检测本机IPv6连通性（优先检测WARP IPv6节点）
- * 结果缓存到全局变量，避免重复检测
- */
-async function checkIPv6Connectivity() {
-  try {
-    // 优先检测WARP的IPv6节点连通性（更贴合实际需求）
-    const { stdout } = await exec('ping6 -c 1 -W 2 2606:4700:d0::a29f:c001', { timeout: 2000 });
-    if (stdout.includes('bytes from')) {
-      return true;
-    }
-    
-    // 备用检测Google DNS IPv6
-    const googleTest = await exec('ping6 -c 1 -W 2 2001:4860:4860::8888', { timeout: 2000 });
-    return googleTest.stdout.includes('bytes from');
-  } catch (error) {
-    console.log('IPv6 connectivity check failed (no IPv6 network or WARP IPv6 unreachable)');
-    return false;
-  }
-}
-
-/**
- * 获取本机公网IP
- */
-async function getPublicIP() {
-  let ipv4 = '';
-  let ipv6 = '';
-  
-  try {
-    // 获取IPv4
-    const ipv4Resp = await axios.get('https://api.ipify.org', { timeout: 5000 });
-    ipv4 = ipv4Resp.data.trim();
-  } catch (error) {
-    console.log('Failed to get public IPv4:', error.message);
-  }
-  
-  try {
-    // 获取IPv6
-    const ipv6Resp = await axios.get('https://api64.ipify.org', { timeout: 5000 });
-    ipv6 = ipv6Resp.data.trim();
-  } catch (error) {
-    console.log('Failed to get public IPv6:', error.message);
-  }
-  
-  return { ipv4, ipv6 };
-}
-
-/**
- * 检测当前IP是否属于WARP IP段
- * 基于特征：104.28开头IPv4 / 2a09开头IPv6
- */
-async function isWARPIP() {
-  const { ipv4, ipv6 } = await getPublicIP();
-  
-  // 精确匹配WARP IP段格式
-  const isWarpIPv4 = ipv4 && /^104\.28\.\d+\.\d+$/.test(ipv4);
-  const isWarpIPv6 = ipv6 && /^2a09:/.test(ipv6);
-  
-  console.log(`WARP IP check - IPv4: ${ipv4} (WARP range: ${isWarpIPv4}), IPv6: ${ipv6} (WARP range: ${isWarpIPv6})`);
-  
-  return isWarpIPv4 || isWarpIPv6;
-}
-
-/**
- * 从甬哥API获取完整的WARP配置（完全匹配Shell脚本逻辑）
- * 解析字段：Private_key、IPV6地址、reserved值、公钥、IPv4地址
- */
-async function fetchWARPConfig() {
-  try {
-    console.log(`Fetching WARP config from: ${WARP_API_URL}`);
-    // 获取原始文本（模拟Shell的curl行为）
-    const response = await axios.get(WARP_API_URL, { 
-      timeout: 10000,
-      responseType: 'text' // 强制以文本形式获取
-    });
-    
-    const warpConfigText = response.data.trim();
-    console.log(`=== 甬哥API原始响应 ===`);
-    console.log(warpConfigText);
-    console.log(`========================`);
-    
-    // ========== 核心：完全匹配甬哥Shell脚本的字段解析 ==========
-    let privateKey = '';
-    let ipv6Address = '';
-    let reserved = [234, 227, 65]; // 默认值
-    let publicKey = 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo='; // WARP官方公钥
-    let warpIPv4 = '162.159.192.1';
-    let warpIPv6 = '2606:4700:d0::a29f:c001';
-    
-    // 1. 解析Private_key（私钥）- 匹配各种写法：Private_key/PrivateKey/私钥
-    const privateKeyMatches = [
-      warpConfigText.match(/Private_key\s*[:=]\s*([^\s\n]+)/),
-      warpConfigText.match(/PrivateKey\s*[:=]\s*([^\s\n]+)/),
-      warpConfigText.match(/私钥\s*[:=]\s*([^\s\n]+)/)
-    ];
-    for (const match of privateKeyMatches) {
-      if (match && match[1]) {
-        privateKey = match[1];
-        console.log(`解析到Private_key: ${privateKey}`);
-        break;
-      }
-    }
-    
-    // 2. 解析IPV6地址
-    const ipv6Matches = [
-      warpConfigText.match(/IPV6地址\s*[:=]\s*([0-9a-fA-F:]+)/),
-      warpConfigText.match(/IPv6\s*[:=]\s*([0-9a-fA-F:]+)/),
-      warpConfigText.match(/Address\s*[:=]\s*([0-9a-fA-F:]+)/)
-    ];
-    for (const match of ipv6Matches) {
-      if (match && match[1]) {
-        ipv6Address = match[1];
-        warpIPv6 = ipv6Address; // 更新WARP IPv6端点
-        console.log(`解析到IPV6地址: ${ipv6Address}`);
-        break;
-      }
-    }
-    
-    // 3. 解析reserved值
-    const reservedMatches = [
-      warpConfigText.match(/reserved值\s*[:=]\s*\[(.*)\]/),
-      warpConfigText.match(/reserved\s*[:=]\s*\[(.*)\]/)
-    ];
-    for (const match of reservedMatches) {
-      if (match && match[1]) {
-        reserved = match[1].split(',').map(item => parseInt(item.trim()));
-        console.log(`解析到reserved值: [${reserved.join(', ')}]`);
-        break;
-      }
-    }
-    
-    // 4. 解析PublicKey（公钥）
-    const publicKeyMatches = [
-      warpConfigText.match(/Public_key\s*[:=]\s*([^\s\n]+)/),
-      warpConfigText.match(/PublicKey\s*[:=]\s*([^\s\n]+)/),
-      warpConfigText.match(/公钥\s*[:=]\s*([^\s\n]+)/),
-      warpConfigText.match(/PublicKey\s*=\s*([^\s\n]+)/) // WireGuard格式
-    ];
-    for (const match of publicKeyMatches) {
-      if (match && match[1]) {
-        publicKey = match[1];
-        console.log(`解析到Public_key: ${publicKey}`);
-        break;
-      }
-    }
-    
-    // 5. 解析IPv4地址
-    const ipv4Matches = [
-      warpConfigText.match(/IPV4地址\s*[:=]\s*([0-9\.]+)/),
-      warpConfigText.match(/IPv4\s*[:=]\s*([0-9\.]+)/),
-      warpConfigText.match(/Endpoint\s*[:=]\s*([0-9\.]+):\d+/)
-    ];
-    for (const match of ipv4Matches) {
-      if (match && match[1]) {
-        warpIPv4 = match[1];
-        console.log(`解析到IPv4地址: ${warpIPv4}`);
-        break;
-      }
-    }
-    
-    // ========== 兜底默认值（确保配置完整性） ==========
-    if (!privateKey) {
-      console.warn('未解析到Private_key，使用默认值');
-      privateKey = '71j3v4Wx7oeDuFWP4kGeHGWpCG0p0AxQF05iLenvL7w='; // 你提供的默认私钥
-    }
-    
-    if (!ipv6Address) {
-      console.warn('未解析到IPV6地址，使用默认值');
-      ipv6Address = '2606:4700:110:8cd4:3606:5fd8:f73a:cdaa'; // 你提供的默认IPv6
-    }
-    
-    // ========== 组装完整的WARP配置 ==========
-    warpConfig = {
-      privateKey: privateKey,       // 私钥
-      publicKey: publicKey,         // 公钥
-      ipv4: warpIPv4,               // WARP IPv4端点
-      ipv6: warpIPv6,               // WARP IPv6端点
-      ipv6Address: ipv6Address,     // 分配的IPv6地址
-      reserved: reserved            // reserved值
-    };
-    
-    console.log('=== WARP配置解析完成 ===');
-    console.log(`私钥: ${warpConfig.privateKey}`);
-    console.log(`公钥: ${warpConfig.publicKey}`);
-    console.log(`WARP IPv4端点: ${warpConfig.ipv4}`);
-    console.log(`WARP IPv6端点: ${warpConfig.ipv6}`);
-    console.log(`分配的IPv6地址: ${warpConfig.ipv6Address}`);
-    console.log(`reserved值: [${warpConfig.reserved.join(', ')}]`);
-    console.log(`========================`);
-    
-    return warpConfig;
-    
-  } catch (error) {
-    console.error('获取WARP配置失败:', error.message);
-    // 使用你提供的默认配置（终极兜底）
-    warpConfig = {
-      privateKey: '71j3v4Wx7oeDuFWP4kGeHGWpCG0p0AxQF05iLenvL7w=',
-      publicKey: 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=',
-      ipv4: '162.159.192.1',
-      ipv6: '2606:4700:d0::a29f:c001',
-      ipv6Address: '2606:4700:110:8cd4:3606:5fd8:f73a:cdaa',
-      reserved: [234, 227, 65]
-    };
-    return warpConfig;
-  }
-}
-
-/**
- * 获取WARP出站配置（使用所有解析的字段）
- */
-async function getWARPOutboundConfig() {
-  // 全局缓存IPv6检测结果，避免重复检测
-  if (global.ipv6Connectivity === undefined) {
-    global.ipv6Connectivity = await checkIPv6Connectivity();
-    console.log(`Global IPv6 connectivity check result: ${global.ipv6Connectivity}`);
-  }
-
-  // 检查当前IP是否已是WARP IP段
-  const isInWARPNAT = await isWARPIP();
-  if (isInWARPNAT) {
-    console.log('Current server IP is already WARP IP range, use direct outbound (freedom)');
-    return {
-      protocol: "freedom",
-      tag: "warp-out",
-      settings: {
-        domainStrategy: "UseIP"
-      }
-    };
-  }
-  
-  // 获取完整的WARP配置
-  if (!warpConfig) {
-    await fetchWARPConfig();
-  }
-  
-  // 选择WARP对接端点
-  let warpServer = warpConfig.ipv4;
-  if (global.ipv6Connectivity && WARP_PREFER_IPV6) {
-    warpServer = warpConfig.ipv6;
-    console.log(`Use WARP IPv6 endpoint: ${warpServer}`);
-  } else {
-    console.log(`Use WARP IPv4 endpoint: ${warpServer}`);
-  }
-
-  // 构建完整的WARP出站配置（使用所有解析的字段）
-  return {
-    protocol: "wireguard",
-    tag: "warp-out",
-    settings: {
-      secretKey: warpConfig.privateKey, // 解析的私钥
-      address: [
-        warpConfig.ipv6Address || "172.16.0.2/32", // 分配的IPv6地址
-        "2606:4700:110:8cd4:3606:5fd8:f73a:cdaa/128"
-      ],
-      peer: {
-        publicKey: warpConfig.publicKey, // 解析的公钥
-        allowedIPs: [
-          "0.0.0.0/0",
-          "::/0"
-        ],
-        endpoint: `${warpServer}:2408`,
-        reserved: warpConfig.reserved // reserved值
-      },
-      mtu: 1280
-    }
-  };
-}
-// ====================== WARP相关功能结束 ======================
-
-// 生成xray配置文件（集成完整的WARP出站配置）
+// 生成Xray配置文件（整合WARP配置，强制全流量走WARP）
 async function generateConfig() {
-  // 获取WARP出站配置
-  const warpOutbound = await getWARPOutboundConfig();
+  // 获取WARP参数
+  const warpParams = getWarpParams();
   
   const config = {
     log: { 
@@ -542,15 +355,49 @@ async function generateConfig() {
       }
     ],
     outbounds: [
-      // WARP出站（优先）- 使用完整解析的配置
-      warpOutbound,
+      // 保留原有direct出站（备用）
       {
         protocol: "freedom",
         tag: "direct",
         settings: {
-          domainStrategy: "UseIP"
+          domainStrategy: warpParams.wxryx
         }
       },
+      // 添加WARP WireGuard出站
+      {
+        tag: 'x-warp-out',
+        protocol: 'wireguard',
+        settings: {
+          secretKey: warpParams.pvk,
+          address: [
+            '172.16.0.2/32',
+            `${warpParams.wpv6}/128`
+          ],
+          peers: [
+            {
+              publicKey: 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=',
+              allowedIPs: [
+                '0.0.0.0/0',
+                '::/0'
+              ],
+              endpoint: `${warpParams.xendip}:2408`
+            }
+          ],
+          reserved: JSON.parse(warpParams.res)
+        }
+      },
+      // WARP代理出站（所有流量走这个）
+      {
+        tag: 'warp-out',
+        protocol: 'freedom',
+        settings: {
+          domainStrategy: warpParams.wxryx
+        },
+        proxySettings: {
+          tag: 'x-warp-out'
+        }
+      },
+      // 保留blackhole出站
       {
         protocol: "blackhole",
         tag: "block"
@@ -559,18 +406,31 @@ async function generateConfig() {
     routing: {
       domainStrategy: "IPIfNonMatch",
       rules: [
-        // 所有流量都走WARP出站
+        // 强制所有IP流量走WARP
         {
-          type: "field",
-          ip: ["0.0.0.0/0", "::/0"],
-          outboundTag: "warp-out"
+          type: 'field',
+          ip: JSON.parse(`[${warpParams.xip}]`),
+          network: 'tcp,udp',
+          outboundTag: warpParams.x1outtag
+        },
+        // 兜底规则：所有流量走WARP
+        {
+          type: 'field',
+          network: 'tcp,udp',
+          outboundTag: warpParams.x2outtag
         }
       ]
     }
   };
   
+  // 写入配置文件
   fs.writeFileSync(path.join(FILE_PATH, 'config.json'), JSON.stringify(config, null, 2));
-  console.log('Xray config generated with complete WARP outbound configuration');
+  
+  // 输出WARP配置信息
+  console.log(`✅ Xray WARP配置已生成，强制所有流量走WARP`);
+  console.log(`🔑 WARP Private Key: ${warpParams.pvk}`);
+  console.log(`🌐 WARP IPv6: ${warpParams.wpv6}`);
+  console.log(`🔌 WARP端点: ${warpParams.xendip}:2408`);
 }
 
 // 判断系统架构
@@ -725,7 +585,7 @@ uuid: ${UUID}`;
     console.log('NEZHA variable is empty,skip running');
   }
 
-  // 运行xray
+  // 运行xr-ay
   const command1 = `nohup ${webPath} -c ${FILE_PATH}/config.json >/dev/null 2>&1 &`;
   try {
     await exec(command1);
@@ -822,7 +682,7 @@ function getFilesForArchitecture(architecture) {
 // 获取固定隧道json - 确保YAML配置正确生成
 function argoType() {
   if (!ARGO_AUTH || !ARGO_DOMAIN) {
-    console.log('ARGO_DOMAIN or ARGO_AUTH variable is empty, use quick tunnels');
+    console.log("ARGO_DOMAIN or ARGO_AUTH variable is empty, use quick tunnels");
     return;
   }
 
@@ -1048,7 +908,7 @@ cleanFiles();
 // 自动访问项目URL
 async function AddVisitTask() {
   if (!AUTO_ACCESS || !PROJECT_URL) {
-    console.log('Skipping adding automatic access task');
+    console.log("Skipping adding automatic access task");
     return;
   }
 
